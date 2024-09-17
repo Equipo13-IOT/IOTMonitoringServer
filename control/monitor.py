@@ -76,13 +76,20 @@ def check_stable_temperature():
 
         # If we don't have exactly 4 readings, skip this station
         if len(readings) < 4:
+            print(f"Station {station} skipped, not enough readings.")
             continue
 
         # Extract the avg_value from each reading
         temperatures = [reading.avg_value for reading in readings]
+        print(f"Station {station}: Last 4 temperatures = {temperatures}")
 
         # Define what "alike" means, e.g., all temperatures within a range of 2 degrees
-        if max(temperatures) - min(temperatures) <= 2:  # You can adjust this range
+        max_temp = max(temperatures)
+        min_temp = min(temperatures)
+        temp_range = max_temp - min_temp
+        print(f"Station {station}: Max temperature = {max_temp}, Min temperature = {min_temp}, Range = {temp_range}")
+
+        if temp_range <= 2:  # You can adjust this range
             stable_stations.append(station)
 
             # Fetch station details for constructing the topic
@@ -101,6 +108,8 @@ def check_stable_temperature():
             # Publish the alert to the MQTT broker
             client.publish(topic, message)
             print(f"Alert sent to {topic}: {message}")
+        else:
+            print(f"Station {station}: Temperature not stable (Range > 2 degrees)")
 
     print(f"{len(stable_stations)} stations have stable temperatures.")
 
