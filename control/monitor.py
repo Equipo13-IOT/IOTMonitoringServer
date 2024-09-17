@@ -1,7 +1,7 @@
 from argparse import ArgumentError
 import ssl
 from django.db.models import Avg
-from datetime import timedelta, datetime
+from datetime import timedelta, datetime, timezone
 from receiver.models import Data, Measurement
 import paho.mqtt.client as mqtt
 import schedule
@@ -19,7 +19,7 @@ def analyze_data():
     print("Calculando alertas...")
 
     check_min_max_alert()
-    check_stable_temperature()
+    check_temperature_close_to_average()
 
 
 def check_min_max_alert():
@@ -63,63 +63,64 @@ def check_min_max_alert():
     print(alerts, "alertas enviadas")
 
 
-def check_stable_temperature():
-    # Fetch all stations
-    stations = Data.objects.values_list('station', flat=True).distinct()
+def check_temperature_close_to_average():
+    # Define the percentage threshold for being "close to average" (e.g., 5%)
+    threshold_percentage = 5  # Adjust this value as needed
 
-    stable_stations = []
+    # Get data from the last hour
+    data = Data.objects.filter(
+        base_time__gte=timezone.now() - timedelta(hours=1)
+    )
 
-    for station in stations:
-        # Get the last 4 temperature readings for this station, using timezone-aware datetimes
-        readings = Data.objects.filter(
-            station=station,
-            measurement__name='temperature',
-            base_time__lte=time.timezone.now()  # Use timezone-aware datetime
-        ).order_by('-base_time')[:4]
+    # Annotate with the average value for the last hour
+    aggregation = data.annotate(check_value=Avg('avg_value')) \
+        .select_related('station', 'measurement') \
+        .select_related('station__user', 'station__location') \
+        .select_related('station__location__city', 'station__location__state', 'station__location__country') \
+        .values('check_value', 'station', 'station__user__username', 'measurement__name',
+                'station__location__city__name',
+                'station__location__state__name', 'station__location__country__name')
 
-        # If we don't have exactly 4 readings, skip this station
-        if len(readings) < 4:
-            print(f"Station {station} skipped, not enough readings.")
+    alerts = 0
+    for item in aggregation:
+        # Fetch the current temperature
+        current_temperature = Data.objects.filter(
+            station=item['station'],
+            measurement__name='temperature'
+        ).order_by('-base_time').values_list('avg_value', flat=True).first()
+
+        # Skip if no current temperature
+        if current_temperature is None:
             continue
 
-        # Extract the avg_value from each reading
-        temperatures = [reading.avg_value for reading in readings]
-        print(f"Station {station}: Last 4 temperature readings (avg_values) = {temperatures}")
+        # Calculate the allowable range around the average
+        average_value = item["check_value"]
+        lower_bound = average_value * (1 - threshold_percentage / 100.0)
+        upper_bound = average_value * (1 + threshold_percentage / 100.0)
 
-        # Check if any avg_value is None
-        if any(temp is None for temp in temperatures):
-            print(f"Station {station}: Contains None values in avg_values, skipping.")
-            continue
+        # Check if current temperature is within the threshold range
+        if lower_bound <= current_temperature <= upper_bound:
+            alert = True
 
-        # Define what "alike" means, e.g., all temperatures within a range of 2 degrees
-        max_temp = max(temperatures)
-        min_temp = min(temperatures)
-        temp_range = max_temp - min_temp
-        print(f"Station {station}: Max temperature = {max_temp}, Min temperature = {min_temp}, Range = {temp_range}")
-
-        if temp_range <= 2:  # You can adjust this range
-            stable_stations.append(station)
-
-            # Fetch station details for constructing the topic
-            station_details = readings[0].station
-            user = station_details.user.username
-            country = station_details.location.country.name
-            state = station_details.location.state.name
-            city = station_details.location.city.name
+            variable = item["measurement__name"]
+            country = item['station__location__country__name']
+            state = item['station__location__state__name']
+            city = item['station__location__city__name']
+            user = item['station__user__username']
 
             # Create the alert message
-            message = f"Temperature is stable for the last 4 readings: {temperatures}"
+            message = f"Temperature close to average: {current_temperature:.2f} (Average: {average_value:.2f})"
 
             # Construct the MQTT topic
-            topic = f'{country}/{state}/{city}/{user}/stable_temperature'
+            topic = f'{country}/{state}/{city}/{user}/temperature_close_to_average'
 
             # Publish the alert to the MQTT broker
             client.publish(topic, message)
-            print(f"Alert sent to {topic}: {message}")
-        else:
-            print(f"Station {station}: Temperature not stable (Range > 2 degrees)")
+            print(datetime.now(), f"Sending alert to {topic}: {message}")
+            alerts += 1
 
-    print(f"{len(stable_stations)} stations have stable temperatures.")
+    print(f"{len(aggregation)} devices checked")
+    print(f"{alerts} alerts sent")
 
 
 def on_connect(client, userdata, flags, rc):
