@@ -63,45 +63,48 @@ def check_min_max_alert():
     print(alerts, "alertas enviadas")
 
 
+from datetime import datetime, timedelta
+
+
 def check_temperature_close_to_average():
     # Define the percentage threshold for being "close to average" (e.g., 5%)
     threshold_percentage = 5  # Adjust this value as needed
 
-    # Get data from the last hour
+    # Get data from the last hour using the initial query
     data = Data.objects.filter(
-        base_time__gte=timezone.now() - timedelta(hours=1)
+        base_time__gte=datetime.now() - timedelta(hours=1)  # Use datetime.now()
     )
 
-    # Annotate with the average value for the last hour
+    # Aggregate and annotate with the average value for the last hour
     aggregation = data.annotate(check_value=Avg('avg_value')) \
         .select_related('station', 'measurement') \
         .select_related('station__user', 'station__location') \
         .select_related('station__location__city', 'station__location__state', 'station__location__country') \
         .values('check_value', 'station', 'station__user__username', 'measurement__name',
-                'station__location__city__name',
-                'station__location__state__name', 'station__location__country__name')
+                'station__location__city__name', 'station__location__state__name', 'station__location__country__name')
 
     alerts = 0
     for item in aggregation:
-        # Fetch the current temperature
-        current_temperature = Data.objects.filter(
+        # Fetch the latest reading (already covered in the previous aggregation)
+        latest_reading = Data.objects.filter(
             station=item['station'],
-            measurement__name='temperature'
+            measurement__name=item['measurement__name']
         ).order_by('-base_time').values_list('avg_value', flat=True).first()
 
-        # Skip if no current temperature
-        if current_temperature is None:
+        # Skip if no latest reading is available
+        if latest_reading is None:
             continue
 
-        # Calculate the allowable range around the average
+        # Get the average value from the aggregation
         average_value = item["check_value"]
+
+        # Calculate the allowable range around the average
         lower_bound = average_value * (1 - threshold_percentage / 100.0)
         upper_bound = average_value * (1 + threshold_percentage / 100.0)
 
-        # Check if current temperature is within the threshold range
-        if lower_bound <= current_temperature <= upper_bound:
-            alert = True
-
+        # Check if the latest reading is within the threshold range of the average
+        if lower_bound <= latest_reading <= upper_bound:
+            # If the latest reading is close to the average, prepare to send an alert
             variable = item["measurement__name"]
             country = item['station__location__country__name']
             state = item['station__location__state__name']
@@ -109,7 +112,7 @@ def check_temperature_close_to_average():
             user = item['station__user__username']
 
             # Create the alert message
-            message = f"Temperature close to average: {current_temperature:.2f} (Average: {average_value:.2f})"
+            message = f"Temperature close to average: {latest_reading:.2f} (Average: {average_value:.2f})"
 
             # Construct the MQTT topic
             topic = f'{country}/{state}/{city}/{user}/temperature_close_to_average'
