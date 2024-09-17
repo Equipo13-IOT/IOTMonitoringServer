@@ -70,9 +70,12 @@ def check_stable_temperature():
     stable_stations = []
 
     for station in stations:
-        # Get the last 4 temperature readings for this station
-        readings = Data.objects.filter(station=station, measurement__name='temperature') \
-                       .order_by('-base_time')[:4]
+        # Get the last 4 temperature readings for this station, using timezone-aware datetimes
+        readings = Data.objects.filter(
+            station=station,
+            measurement__name='temperature',
+            base_time__lte=time.timezone.now()  # Use timezone-aware datetime
+        ).order_by('-base_time')[:4]
 
         # If we don't have exactly 4 readings, skip this station
         if len(readings) < 4:
@@ -81,7 +84,12 @@ def check_stable_temperature():
 
         # Extract the avg_value from each reading
         temperatures = [reading.avg_value for reading in readings]
-        print(f"Station {station}: Last 4 temperatures = {temperatures}")
+        print(f"Station {station}: Last 4 temperature readings (avg_values) = {temperatures}")
+
+        # Check if any avg_value is None
+        if any(temp is None for temp in temperatures):
+            print(f"Station {station}: Contains None values in avg_values, skipping.")
+            continue
 
         # Define what "alike" means, e.g., all temperatures within a range of 2 degrees
         max_temp = max(temperatures)
