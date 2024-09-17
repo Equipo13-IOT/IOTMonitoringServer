@@ -63,9 +63,6 @@ def check_min_max_alert():
     print(alerts, "alertas enviadas")
 
 
-from datetime import datetime, timedelta
-
-
 def check_temperature_close_to_average():
     # Define the percentage threshold for being "close to average" (e.g., 5%)
     threshold_percentage = 5  # Adjust this value as needed
